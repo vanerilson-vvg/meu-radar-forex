@@ -4,63 +4,67 @@ import requests
 from datetime import datetime
 import time
 
-st.set_page_config(page_title="Radar Estável VVG", layout="wide")
+# Configurações do Site
+st.set_page_config(page_title="Radar Turbo VVG", layout="wide")
 
-def buscar_dados(intervalo):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X?interval={intervalo}&range=1d"
+def buscar_dados_completos():
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X?interval=1m&range=1d"
     try:
         res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
         r = res.json()['chart']['result'][0]
         df = pd.DataFrame(r['indicators']['quote'][0])
-        return df.dropna()
-    except: return None
+        meta = r['meta']
+        
+        # Cálculos de Variação (conforme a imagem do Yahoo Finance)
+        preco_atual = meta['regularMarketPrice']
+        preco_fechamento_ontem = meta['previousClose']
+        variacao_nominal = preco_atual - preco_fechamento_ontem
+        variacao_percentual = (variacao_nominal / preco_fechamento_ontem) * 100
+        
+        return df.dropna(), preco_atual, variacao_nominal, variacao_percentual
+    except: return None, 0, 0, 0
 
-def calcular_status_estavel(df):
-    if df is None or len(df) < 30: return 0
+def calcular_status(df):
+    if df is None or len(df) < 20: return None
     c = df['close']
-    # Médias mais longas para evitar mudanças frenéticas
-    ema_curta = c.ewm(span=20).mean().iloc[-1]
-    ema_longa = c.ewm(span=50).mean().iloc[-1]
-    
-    if c.iloc[-1] > ema_curta and ema_curta > ema_longa: return 1 # Compra Forte
-    if c.iloc[-1] < ema_curta and ema_curta < ema_longa: return -1 # Venda Forte
-    return 0 # Neutro (Aguardar)
+    ema9 = c.ewm(span=9).mean().iloc[-1]
+    ema21 = c.ewm(span=21).mean().iloc[-1]
+    return 1 if c.iloc[-1] > ema9 and c.iloc[-1] > ema21 else -1
 
-st.title("🛡️ RADAR DE ALTA PRECISÃO - EUR/USD")
+st.title("📈 RADAR PROFISSIONAL - EUR/USD")
 espaco = st.empty()
 
 while True:
-    df_5m = buscar_dados("5m")
-    df_15m = buscar_dados("15m") # Mudamos para 15M para filtrar o ruído
+    df_1m, preco, var_nom, var_per = buscar_dados_completos()
+    sinal_1m = calcular_status(df_1m)
     
-    s1 = calcular_status_estavel(df_5m)
-    s2 = calcular_status_estavel(df_15m)
+    # Busca 5M separadamente para o status
+    res_5m = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X?interval=5m&range=1d", headers={'User-Agent': 'Mozilla/5.0'}).json()
+    df_5m = pd.DataFrame(res_5m['chart']['result'][0]['indicators']['quote'][0]).dropna()
+    sinal_5m = calcular_status(df_5m)
     
     with espaco.container():
-        if df_5m is not None:
-            st.subheader(f"Preço Atual: {df_5m['close'].iloc[-1]:.5f}")
+        # EXIBIÇÃO DOS NÚMEROS DIÁRIOS (O QUE VOCÊ PEDIU)
+        cor = "red" if var_nom < 0 else "green"
+        st.markdown(f"### Preço: {preco:.5f} <span style='color:{cor}; font-size: 0.8em;'> {var_nom:+.5f} ({var_per:+.2f}%)</span>", unsafe_allow_html=True)
         
         col1, col2 = st.columns(2)
         with col1:
-            st.write("### TENDÊNCIA 5M")
-            if s1 == 1: st.success("🟢 ALTA")
-            elif s1 == -1: st.error("🔴 BAIXA")
-            else: st.warning("🟡 NEUTRO")
-            
+            st.write("### 1 MINUTO")
+            if sinal_1m == 1: st.success("🟢 COMPRA")
+            else: st.error("🔴 VENDA")
         with col2:
-            st.write("### TENDÊNCIA 15M")
-            if s2 == 1: st.success("🟢 ALTA")
-            elif s2 == -1: st.error("🔴 BAIXA")
-            else: st.warning("🟡 NEUTRO")
+            st.write("### 5 MINUTOS")
+            if sinal_5m == 1: st.success("🟢 COMPRA")
+            else: st.error("🔴 VENDA")
             
         st.markdown("---")
-        # Só dá o sinal se 5M e 15M estiverem idênticos e fortes
-        if s1 == s2 and s1 != 0:
-            msg = "🚀 OPORTUNIDADE DE COMPRA" if s1 == 1 else "📉 OPORTUNIDADE DE VENDA"
-            st.button(msg, use_container_width=True)
+        if sinal_1m == sinal_5m:
+            st.warning("🔥 CONFLUÊNCIA DETECTADA!")
         else:
-            st.info("⌛ MERCADO SEM DIREÇÃO CLARA - NÃO OPERE")
+            st.info("⚠️ AGUARDAR - DIVERGÊNCIA")
             
-        st.caption(f"Dados filtrados às: {datetime.now().strftime('%H:%M:%S')}")
+        st.caption(f"Sincronizado: {datetime.now().strftime('%H:%M:%S')}")
     
-    time.sleep(10) # Aumentamos para 10s para você ter tempo de pensar
+    time.sleep(2) # Mantive os 2 segundos de turbo
+            
