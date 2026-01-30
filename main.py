@@ -4,74 +4,67 @@ import requests
 from datetime import datetime
 import time
 
-# Configuração da página
-st.set_page_config(page_title="Radar VVG Pro", layout="wide")
+# Configurações do Site
+st.set_page_config(page_title="Radar Turbo VVG", layout="wide")
 
-def buscar_dados(intervalo):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X?interval={intervalo}&range=1d"
+def buscar_dados_completos():
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X?interval=1m&range=1d"
     try:
         res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
         r = res.json()['chart']['result'][0]
         df = pd.DataFrame(r['indicators']['quote'][0])
         meta = r['meta']
-        return df.dropna(), meta['regularMarketPrice'], meta['previousClose']
-    except: return None, 0, 0
+        
+        # Cálculos de Variação (conforme a imagem do Yahoo Finance)
+        preco_atual = meta['regularMarketPrice']
+        preco_fechamento_ontem = meta['previousClose']
+        variacao_nominal = preco_atual - preco_fechamento_ontem
+        variacao_percentual = (variacao_nominal / preco_fechamento_ontem) * 100
+        
+        return df.dropna(), preco_atual, variacao_nominal, variacao_percentual
+    except: return None, 0, 0, 0
 
-def calcular_status_estavel(df):
-    if df is None or len(df) < 30: return 0
+def calcular_status(df):
+    if df is None or len(df) < 20: return None
     c = df['close']
-    ema_curta = c.ewm(span=20).mean().iloc[-1]
-    ema_longa = c.ewm(span=50).mean().iloc[-1]
-    if c.iloc[-1] > ema_curta and ema_curta > ema_longa: return 1
-    if c.iloc[-1] < ema_curta and ema_curta < ema_longa: return -1
-    return 0
+    ema9 = c.ewm(span=9).mean().iloc[-1]
+    ema21 = c.ewm(span=21).mean().iloc[-1]
+    return 1 if c.iloc[-1] > ema9 and c.iloc[-1] > ema21 else -1
 
-# --- CRIAÇÃO DOS ESPAÇOS FIXOS (FORA DO LOOP) ---
-st.title("🛡️ RADAR DE ALTA PRECISÃO")
-container_preco = st.empty()
-col1, col2 = st.columns(2)
-espaco_5m = col1.empty()
-espaco_15m = col2.empty()
-container_aviso = st.empty()
-container_tempo = st.empty()
+st.title("📈 RADAR PROFISSIONAL - EUR/USD")
+espaco = st.empty()
 
-# --- LOOP DE ATUALIZAÇÃO ---
 while True:
-    df_5m, preco, fecho = buscar_dados("5m")
-    df_15m, _, _ = buscar_dados("15m")
-    s1 = calcular_status_estavel(df_5m)
-    s2 = calcular_status_estavel(df_15m)
+    df_1m, preco, var_nom, var_per = buscar_dados_completos()
+    sinal_1m = calcular_status(df_1m)
     
-    # 1. Atualiza Preço e Variação Diária
-    var_nom = preco - fecho
-    var_per = (var_nom / fecho) * 100
-    cor_var = "green" if var_nom >= 0 else "red"
-    container_preco.markdown(f"## {preco:.5f} <span style='color:{cor_var}; font-size: 0.6em;'>{var_nom:+.5f} ({var_per:+.2f}%)</span>", unsafe_allow_html=True)
+    # Busca 5M separadamente para o status
+    res_5m = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X?interval=5m&range=1d", headers={'User-Agent': 'Mozilla/5.0'}).json()
+    df_5m = pd.DataFrame(res_5m['chart']['result'][0]['indicators']['quote'][0]).dropna()
+    sinal_5m = calcular_status(df_5m)
     
-    # 2. Atualiza Tendência 5M
-    with espaco_5m.container():
-        st.write("### TENDÊNCIA 5M")
-        if s1 == 1: st.success("ALTA")
-        elif s1 == -1: st.error("BAIXA")
-        else: st.warning("NEUTRO")
+    with espaco.container():
+        # EXIBIÇÃO DOS NÚMEROS DIÁRIOS (O QUE VOCÊ PEDIU)
+        cor = "red" if var_nom < 0 else "green"
+        st.markdown(f"### Preço: {preco:.5f} <span style='color:{cor}; font-size: 0.8em;'> {var_nom:+.5f} ({var_per:+.2f}%)</span>", unsafe_allow_html=True)
         
-    # 3. Atualiza Tendência 15M
-    with espaco_15m.container():
-        st.write("### TENDÊNCIA 15M")
-        if s2 == 1: st.success("ALTA")
-        elif s2 == -1: st.error("BAIXA")
-        else: st.warning("NEUTRO")
-        
-    # 4. Atualiza Aviso de Oportunidade
-    with container_aviso.container():
-        st.markdown("---")
-        if s1 == s2 and s1 != 0:
-            tipo = "OPORTUNIDADE DE COMPRA 🚀" if s1 == 1 else "OPORTUNIDADE DE VENDA 📉"
-            st.info(f"## {tipo}")
-        else:
-            st.info("## ⌛ AGUARDANDO CONFLUÊNCIA")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("### 1 MINUTO")
+            if sinal_1m == 1: st.success("🟢 COMPRA")
+            else: st.error("🔴 VENDA")
+        with col2:
+            st.write("### 5 MINUTOS")
+            if sinal_5m == 1: st.success("🟢 COMPRA")
+            else: st.error("🔴 VENDA")
             
-    container_tempo.caption(f"Última filtragem: {datetime.now().strftime('%H:%M:%S')}")
+        st.markdown("---")
+        if sinal_1m == sinal_5m:
+            st.warning("🔥 CONFLUÊNCIA DETECTADA!")
+        else:
+            st.info("⚠️ AGUARDAR - DIVERGÊNCIA")
+            
+        st.caption(f"Sincronizado: {datetime.now().strftime('%H:%M:%S')}")
     
-    time.sleep(10)
-    
+    time.sleep(2) # Mantive os 2 segundos de turbo
+                
